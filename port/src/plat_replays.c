@@ -18,6 +18,7 @@
 #include <unistd.h>
 #endif
 #include "plat_replays.h"
+#include "port_view.h"
 
 extern int Port_NetActive(void);
 extern int Port_NetSpectating(void);
@@ -504,13 +505,14 @@ int Port_RepSpeedMilli(void) {
    else's fight depends on it, and the replay's own result can differ only where a double KO is decided by that generator): never
    in a live match, online or not. */
 int Port_SplitWanted(void) {
-    return Port_RepPlayActive() && sSplit;
+    return Port_RepPlayActive() && (sSplit || PortView_IsSplitActive());
 }
 void Port_SplitSet(int on) {
     sSplit = on != 0;
+    PortView_SetMode(sSplit ? VIEW_MODE_SPLIT : (Port_RepMySide() == 1 ? VIEW_MODE_P2 : VIEW_MODE_P1));
 }
 int Port_SplitGet(void) {
-    return Port_RepPlayActive() ? sSplit : 0;
+    return Port_RepPlayActive() ? (sSplit || PortView_IsSplitActive()) : 0;
 }
 /* The pad's L1 + L2 + R1 + R2 held together (the order does not matter) toggles it, if the player asked for that shortcut. */
 void Port_SplitKeys(unsigned held) {
@@ -519,8 +521,8 @@ void Port_SplitKeys(unsigned held) {
     int now = (held & all) == all;
 
     if (now && !was && Port_RepPlayActive() && Port_Setting("rep_split_key", 1) != 0) {
-        sSplit = !sSplit;
-        Port_UiNotice(sSplit ? "Pantalla dividida: ACTIVADA" : "Pantalla dividida: DESACTIVADA");
+        PortView_CycleNext();
+        sSplit = PortView_IsSplitActive();
     }
     was = now;
 }

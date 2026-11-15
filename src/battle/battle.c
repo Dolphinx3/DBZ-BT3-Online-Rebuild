@@ -4,6 +4,9 @@
 #include "sys/dma.h"
 #include "sys/job.h"
 #include "sys/pad.h"
+#ifdef PORT
+#include "port_view.h"
+#endif
 
 /*
  * Battle scene top level, 0x12B570..0x12BD58. The frame order, the pause/restart/exit protocol and the
@@ -207,7 +210,11 @@ s32 Battle_Update(void) {
     singleView = BtlCam_UpdateOverride();
     BtlChars_EndFrame();
     BtlObj_UpdateAll();
+#ifdef PORT
+    if ((Battle_IsSplitScreen() || PortView_IsSplitActive()) && !singleView) {
+#else
     if (Battle_IsSplitScreen() && !singleView) {
+#endif
         for (i = 0; i < 2; i++) {
             BtlCam_SelectView(i);
             BtlCam_ApplyView(0);
@@ -359,7 +366,11 @@ void Battle_Loop(void) {
 #endif
         draw = Battle_Update();
         done = BtlGame_Update();
+#ifdef PORT
+        if ((Battle_IsSplitScreen() || PortView_IsSplitActive()) && draw) {
+#else
         if (Battle_IsSplitScreen() && draw) {
+#endif
             Battle_DrawSplit();
         } else {
             Battle_Draw();

@@ -1,5 +1,8 @@
 #include "common.h"
 #include "battle/eft_aa.h"
+#ifdef PORT
+#include "port_view.h"
+#endif
 
 /*
  * Effect modules, 0x199F28..0x19E0C0. See include/battle/eft_aa.h for the list.
@@ -1323,8 +1326,8 @@ void EftBlind_Draw(void) {
                BtlScene_IsCharInView): the game's "one view", where it draws no overlay, so a blinded player saw
                only the flash of the technique and none of the second or two of fading grey. Here: that player's
                own overlay over the whole screen, as in a one-player battle. Drawing only. */
-            if (Port_NetView() >= 0 && BtlCam_GetPriorityView() < 0 && (gEftBlind->flags & (Port_NetView() == 0 ? EFT_BLIND_SHOW0 : EFT_BLIND_SHOW1))) {
-                EftBlind_DrawOverlay(0, 1, gEftBlind->alpha[Port_NetView()]);
+            if (PortView_GetOverride() >= 0 && BtlCam_GetPriorityView() < 0 && (gEftBlind->flags & (PortView_GetOverride() == 0 ? EFT_BLIND_SHOW0 : EFT_BLIND_SHOW1))) {
+                EftBlind_DrawOverlay(0, 1, gEftBlind->alpha[PortView_GetOverride()]);
             }
 #endif
             return;
@@ -1336,6 +1339,25 @@ void EftBlind_Draw(void) {
             EftBlind_DrawOverlay(1, 0, gEftBlind->alpha[1]);
         }
     } else {
+#ifdef PORT
+        if (!BtlScene_IsSingleView()) {
+            f32 a1 = EFT_BLIND_CLAMP(BtlCharApi_GetBlindRatio(1) * 255.0f);
+            if (gEftBlind->flags & EFT_BLIND_SHOW0) {
+                EftBlind_DrawOverlay(0, 0, gEftBlind->alpha[0]);
+            }
+            if (a1 > 0.0f) {
+                EftBlind_DrawOverlay(1, 0, a1);
+            }
+            return;
+        }
+        if (PortView_GetOverride() == 1 && BtlCam_GetPriorityView() < 0) {
+            f32 a1 = EFT_BLIND_CLAMP(BtlCharApi_GetBlindRatio(1) * 255.0f);
+            if (a1 > 0.0f) {
+                EftBlind_DrawOverlay(0, 1, a1);
+            }
+            return;
+        }
+#endif
         if (gEftBlind->flags & EFT_BLIND_SHOW0) {
             EftBlind_DrawOverlay(0, 1, gEftBlind->alpha[0]);
         }

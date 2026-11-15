@@ -323,11 +323,16 @@ s32 BtlScene_IsSecondView(void) {
 
 /* Tells a task whether to draw for this fighter in the view being drawn (split-screen aware). */
 #ifdef PORT
+#include "port_view.h"
 extern int Port_NetView(void);          /* port/src/gs/net.c: the local player's view (0 or 1) when online, or -1 */
 extern s32 BtlCam_GetPriorityView(void);
 #endif
 s32 BtlScene_IsCharInView(s32 objId) {
+#ifdef PORT
+    if (Battle_IsSplitScreen() || PortView_IsSplitActive()) {
+#else
     if (Battle_IsSplitScreen()) {
+#endif
         if (BtlScene_IsSingleView()) {
             if (EftCam_IsActive()) {
                 return 1;
@@ -339,8 +344,8 @@ s32 BtlScene_IsCharInView(s32 objId) {
                own view, in front of everything, was drawn for the opponent too: the dark shape under his aura
                on whatever he stood behind. Here as in the two halves: only the view's own fighter. Asked by
                drawing code only, so the two copies' states stay the same. */
-            if (Port_NetView() >= 0 && BtlCam_GetPriorityView() < 0) {
-                return objId == Port_NetView();
+            if (PortView_GetOverride() >= 0 && BtlCam_GetPriorityView() < 0) {
+                return objId == PortView_GetOverride();
             }
 #endif
             return BtlCharApi_IsCamShown(objId);
@@ -389,7 +394,11 @@ void BtlScene_SetSingleView(s32 singleView) {
 
 /* Returns 1 when one view is drawn (not split-screen, or the camera forced it). */
 s32 BtlScene_IsSingleView(void) {
+#ifdef PORT
+    if (!Battle_IsSplitScreen() && !PortView_IsSplitActive()) {
+#else
     if (!Battle_IsSplitScreen()) {
+#endif
         return 1;
     }
     return gBtlScene->singleView;

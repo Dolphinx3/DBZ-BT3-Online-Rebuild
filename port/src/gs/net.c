@@ -924,15 +924,18 @@ static unsigned sSpecSkipped;
 static int sSpecNoticed;                   /* the end of watching has been told (ended) */
 static volatile int sSpecLeaveAsked;       /* the window's "Stop watching" (done on the game's thread) */
 
+#include "port_view.h"
+
 /* The window (ui.cpp): stop watching; switch whose view is shown. */
 void Port_NetSpecLeave(void) {
     sSpecLeaveAsked = 1;
 }
 void Port_NetSpecViewSet(int view) {
     sSpecView = view < 0 || view > 2 ? 0 : view;
+    PortView_SetMode((PortViewMode)sSpecView);
 }
 int Port_NetSpecView(void) {
-    return sSpecView;
+    return (int)PortView_GetMode();
 }
 
 static int spec_allowed(void) {
@@ -2742,6 +2745,7 @@ static void spec_tick(unsigned tick) {
             }
             if (at == tick) {
                 sSpecView = atoi(after + 1) % 3;
+                PortView_SetMode((PortViewMode)sSpecView);
                 fprintf(stderr, "bt3: net: spectating: view %d from blank %u\n", sSpecView, tick);
             }
             p = after + 1;
@@ -2954,15 +2958,7 @@ unsigned Port_NetTick(void) {
    otherwise (the two views side by side, as always). BT3_VIEW=0|1: the same without a connection, for looking at
    it and for comparing the game's state between the three ways of showing a battle. */
 int Port_NetView(void) {
-    static int forced = -2;
-    if (forced == -2) {
-        const char *e = getenv("BT3_VIEW");
-        forced = e != NULL ? atoi(e) : -1;
-    }
-    if (forced >= 0) {
-        return forced & 1;
-    }
-    return Port_NetActive() ? (sMode == 3 ? (sSpecView == 2 ? -1 : sSpecView) : sMe) : -1;
+    return PortView_GetOverride();
 }
 
 /* ---------------------------------------------------------------------------------------------------------------

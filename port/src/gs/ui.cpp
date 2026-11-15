@@ -17,6 +17,7 @@
 #include "namefont.h"
 #include "plat_training.h"
 #include "plat_replays.h"
+#include "port_view.h"
 #include "jukebox.h"
 #include <ctime>
 #include "../port_release.h"
@@ -1293,11 +1294,22 @@ int Ui_Event(const SDL_Event *ev) {
         gPortSpecMenuAsk = 1; // a spectator's own pause menu (the game's, over the match: only on this screen)
         return 1;
     }
-    if (!sOpen && !sQuit && Port_NetSpectating() &&
-        ((ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat && ev->key.scancode == SDL_SCANCODE_V) ||
-         (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && ev->gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))) {
-        spec_view_next(); // (a spectator's keys and controller play nobody: the view is all they change)
-        return 1;
+    if (!sOpen && !sQuit && (Port_BattleIsRunning() || Port_NetSpectating()) && PortView_GetShortcutEnabled()) {
+        PortViewRole role = PortView_GetRole();
+        bool keyHit = (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat && ev->key.scancode == SDL_SCANCODE_V);
+        bool padHit = false;
+        if (ev->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+            if (role == ROLE_SPECTATOR) {
+                padHit = (ev->gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER ||
+                          ev->gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+            } else {
+                padHit = (ev->gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK);
+            }
+        }
+        if (keyHit || padHit) {
+            PortView_CycleNext();
+            return 1;
+        }
     }
     if (ev->type == SDL_EVENT_KEY_DOWN && !ev->key.repeat && *PortInput_ChatKey() > 0 && (int)ev->key.scancode == *PortInput_ChatKey() &&
         chat_can_open()) {
@@ -1541,6 +1553,48 @@ static void video_tab(PortVideo &v) {
             sMeter = on;
             Port_SettingSave("meter", sMeter);
             Port_SettingsWrite();
+        }
+    }
+    ImGui::Spacing();
+    ImGui::SeparatorText("Pantalla dividida y Selector de Camara");
+    {
+        bool splitDef = PortView_GetDefaultSplit() != 0;
+        if (ImGui::Checkbox("Habilitar pantalla dividida por defecto en combate (Split-Screen)", &splitDef)) {
+            PortView_SetDefaultSplit(splitDef ? 1 : 0);
+            if (Port_BattleIsRunning() || Port_NetSpectating()) {
+                PortViewRole role = PortView_GetRole();
+                PortView_SetMode(splitDef ? VIEW_MODE_SPLIT : (role == ROLE_ACTIVE_P2 ? VIEW_MODE_P2 : VIEW_MODE_P1));
+            }
+        }
+        ImGui::SetItemTooltip("Inicia los combates mostrando ambas camaras en pantalla dividida (P1 a la izquierda, P2 a la derecha)\n"
+                              "sin alterar el angulo de movimiento ni la sincronizacion online.");
+
+        bool allowLocal = PortView_GetAllowLocal() != 0;
+        if (ImGui::Checkbox("Permitir pantalla dividida tambien en modo local (1P vs CPU / Entrenamiento)", &allowLocal)) {
+            PortView_SetAllowLocal(allowLocal ? 1 : 0);
+            if (!allowLocal && Port_BattleIsRunning()) {
+                PortView_SetMode(PortView_GetMode()); // re-evalua permisos de inmediato
+            }
+        }
+        ImGui::SetItemTooltip("Desmarcalo si deseas restringir la pantalla dividida exclusivamente al modo Online y al Duelo 1P vs 2P.");
+
+        bool shortcutOn = PortView_GetShortcutEnabled() != 0;
+        if (ImGui::Checkbox("Atajo de cambio rapido de vista (Tecla V / R3 en combate, R1 en espectador)", &shortcutOn)) {
+            PortView_SetShortcutEnabled(shortcutOn ? 1 : 0);
+        }
+        ImGui::SetItemTooltip("En combate (Jugador Activo): alterna solo entre tu camara propia y pantalla dividida (nunca la vista exclusiva del rival).\n"
+                              "En modo Espectador / Replay: rota libremente entre Camara P1 -> Camara P2 -> Pantalla Dividida.");
+
+        if (Port_BattleIsRunning() || Port_NetSpectating()) {
+            PortViewRole role = PortView_GetRole();
+            const char *roleText = role == ROLE_SPECTATOR ? "Espectador (3 vistas)" :
+                                   (role == ROLE_ACTIVE_P2 ? "Jugador Activo J2 (Propia <-> Dividida)" : "Jugador Activo J1 (Propia <-> Dividida)");
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Rol: %s  |  Vista actual: %s", roleText, PortView_GetName(PortView_GetMode()));
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Cambiar vista (V)")) {
+                PortView_CycleNext();
+            }
         }
     }
     ImGui::Spacing();
@@ -2977,12 +3031,14 @@ static void replay_bar(void) {
         if (ImGui::Button("10 s >>")) { replay_jump(played + 300, total); }
         ImGui::SameLine(0.0f, U(18.0f));
         {
-            bool sp = Port_SplitGet() != 0;
+            PortViewMode vm = PortView_GetMode();
+            bool sp = vm == VIEW_MODE_SPLIT;
+            const char *vlabel = vm == VIEW_MODE_SPLIT ? "Vista: Dividida" : (vm == VIEW_MODE_P2 ? "Vista: J2" : "Vista: J1");
             if (sp) {
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.96f, 0.55f, 0.13f, 1.0f));
             }
-            if (ImGui::Button(sp ? "Dividida" : "Una vista")) {
-                Port_SplitSet(sp ? 0 : 1);
+            if (ImGui::Button(vlabel)) {
+                PortView_CycleNext();
             }
             if (sp) {
                 ImGui::PopStyleColor();
@@ -3879,7 +3935,7 @@ static const char *spec_view_name(int view) {
 }
 
 static void spec_view_next(void) {
-    Port_NetSpecViewSet((Port_NetSpecView() + 1) % 3);
+    PortView_CycleNext();
 }
 
 // For the players: who watches their match (small, in the top right corner).

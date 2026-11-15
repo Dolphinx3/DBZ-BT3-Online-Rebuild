@@ -10,6 +10,11 @@
 #include "sys/math3d.h"
 #include "sys/ramp.h"
 #include "sys/randf.h"
+#ifdef PORT
+#include "port_view.h"
+extern unsigned long long gPortRandNext;
+extern s32 rand(void);
+#endif
 
 /*
  * Battle screen effects, 0x245F58..0x248F28. See include/battle/stg_c.h for the overview.
@@ -506,17 +511,47 @@ void StgHaze_DrawAll(void) {
         StgHaze_DrawView(0, 0);
         return;
     }
+#ifdef PORT
+    if (Battle_IsSplitScreen() || PortView_IsSplitActive()) {
+#else
     if (Battle_IsSplitScreen()) {
+#endif
         if (DemoCam_IsActive()) {
             StgHaze_DrawView(0, 0);
+#ifdef PORT
+            gStgHaze[1].frame = gStgHaze[0].frame;
+#endif
         } else if (gBtlCam->cur->split == 0) {
             StgHaze_DrawView(0, gBtlCam->cur->index);
+#ifdef PORT
+            gStgHaze[1 - (gBtlCam->cur->index & 1)].frame = gStgHaze[gBtlCam->cur->index & 1].frame;
+#endif
         } else {
+#ifdef PORT
+            unsigned long long savedRand = gPortRandNext;
+            s32 frame0 = gStgHaze[0].frame;
+            gStgHaze[1].frame = frame0;
             StgHaze_DrawView(1, 0);
             StgHaze_DrawView(1, 1);
+            if (!(Battle_GetWork()->flags & BATTLE_FLAG_PAUSE) && gStgHaze[0].period > 0 && (frame0 % gStgHaze[0].period) == 0) {
+                s32 n = gStgHaze[0].rows * gStgHaze[0].cols * 2;
+                gPortRandNext = savedRand;
+                while (n-- > 0) {
+                    (void)rand();
+                }
+            } else {
+                gPortRandNext = savedRand;
+            }
+#else
+            StgHaze_DrawView(1, 0);
+            StgHaze_DrawView(1, 1);
+#endif
         }
     } else {
         StgHaze_DrawView(0, gBtlCam->cur->index);
+#ifdef PORT
+        gStgHaze[1 - (gBtlCam->cur->index & 1)].frame = gStgHaze[gBtlCam->cur->index & 1].frame;
+#endif
     }
 }
 
@@ -1211,7 +1246,11 @@ void StgBlur_DrawAll(void) {
         StgBlur_Draw(0, 0, &gBtlCamView->world2view2);
         return;
     }
+#ifdef PORT
+    if (Battle_IsSplitScreen() || PortView_IsSplitActive()) {
+#else
     if (Battle_IsSplitScreen()) {
+#endif
         if (DemoCam_IsActive()) {
             StgBlur_Draw(0, 0, &gBtlCam->views[0].view.world2view2);
             return;

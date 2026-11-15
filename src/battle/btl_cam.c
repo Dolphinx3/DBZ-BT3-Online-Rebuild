@@ -4,6 +4,7 @@
 #include "battle/btl_cam.h"
 #ifdef PORT
 #include "battle/stg_a.h" /* (script mods' camera: the stage) */
+#include "port_view.h"
 #endif
 #include "battle/btl_demo_cam.h"
 #include "sys/heap.h"
@@ -468,6 +469,9 @@ void BtlCam_Reset(void) {
     BtlCam_InitViews();
     gBtlCam->cur = &gBtlCam->views[0];
     DemoCam_Reset();
+#ifdef PORT
+    PortView_BattleReset();
+#endif
 }
 
 /* Allocates the camera block and the demo camera, and initialises the battle views. */
@@ -489,7 +493,11 @@ void BtlCam_UpdateView(s32 side) {
     BtlCamView *view = gBtlCam->cur;
     s32 objId = BattleSide_GetObjId(side);
 
+#ifdef PORT
+    if (Battle_IsSplitScreen() || PortView_IsSplitActive()) {
+#else
     if (Battle_IsSplitScreen()) {
+#endif
         BtlCam_SetLayout(1, 0);
     }
     BtlCharApi_GetCamPose(objId, &view->pos, &view->rot);
@@ -596,7 +604,11 @@ s32 BtlCam_GetDefaultView(void) {
 
 /* Split-screen only: switches the selected view between its half (1) and the full screen (0), rebuilding it. */
 void BtlCam_SetLayout(s32 split, s32 apply) {
+#ifdef PORT
+    if (Battle_IsSplitScreen() || PortView_IsSplitActive() || gBtlCam->cur->split != 0) {
+#else
     if (Battle_IsSplitScreen()) {
+#endif
         BtlCamView *view = gBtlCam->cur;
 
         if (split != view->split) {
@@ -648,20 +660,37 @@ void BtlCam_ApplyView(s32 scissor) {
     View_Apply(&gBtlCam->cur->view, scissor);
 }
 
-#ifdef PORT
-extern int Port_NetView(void); /* port/src/gs/net.c: the local player's view (0 or 1), or -1 */
-extern int Port_SplitWanted(void); /* port/src/plat_replays.c: a REPLAY the player asked to see in split screen (never a live match) */
-#endif
 /* Decides whether one full-screen view replaces the per-player views this frame; returns 1 if so. */
 s32 BtlCam_UpdateOverride(void) {
     s32 ret = 0;
     s32 idx;
 
-    if (!Battle_IsSplitScreen() || (BattleReplay_IsActive() != 0
 #ifdef PORT
-                                    && !Port_SplitWanted()
-#endif
-                                    )) {
+    if (!Battle_IsSplitScreen() && !PortView_IsSplitActive()) {
+        idx = BtlCam_GetPriorityView();
+        if (idx < 0) {
+            idx = PortView_GetOverride();
+            if (idx < 0) {
+                idx = BtlCam_GetDefaultView();
+            }
+        }
+        BtlCam_SelectView(idx);
+        ret = 1;
+        BtlCam_ApplyView(1);
+        BtlCam_SetLayout(0, 1);
+    } else {
+        idx = BtlCam_GetPriorityView();
+        if (idx < 0) {
+            idx = PortView_GetOverride();
+        }
+        if (idx >= 0) {
+            BtlCam_SelectView(idx);
+            ret = 1;
+            BtlCam_SetLayout(0, 1);
+        }
+    }
+#else
+    if (!Battle_IsSplitScreen() || (BattleReplay_IsActive() != 0)) {
         idx = BtlCam_GetPriorityView();
         if (idx < 0) {
             idx = BtlCam_GetDefaultView();
@@ -672,20 +701,13 @@ s32 BtlCam_UpdateOverride(void) {
         BtlCam_SetLayout(0, 1);
     } else {
         idx = BtlCam_GetPriorityView();
-#ifdef PORT
-        /* Online play: both machines run the two-player game with its two cameras, and each shows only its own
-           player's view, full screen. That is this function's own case of "one view has priority", with the
-           local player's view taking the place when the game itself gives none priority. */
-        if (idx < 0) {
-            idx = Port_NetView();
-        }
-#endif
         if (idx >= 0) {
             BtlCam_SelectView(idx);
             ret = 1;
             BtlCam_SetLayout(0, 1);
         }
     }
+#endif
     if (DemoCam_IsActive() != 0) {
         DemoCam_Update();
         ret = 1;

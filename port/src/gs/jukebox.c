@@ -100,11 +100,16 @@ int Jukebox_Measure(const char *path, float *rmsDb, float *peak, double *seconds
     enum { RATE = 22050, BLOCK = RATE * 400 / 1000 };
     ma_decoder dec;
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, RATE);
-    static __thread float buf[4096 * 2];
+    float *buf;
     double blockSum = 0.0, gated = 0.0, pk = 0.0;
     ma_uint64 blockN = 0, gatedN = 0, total = 0;
 
     if (ma_decoder_init_file(path, &cfg, &dec) != MA_SUCCESS) {
+        return 0;
+    }
+    buf = (float *)malloc(4096 * 2 * sizeof(float));
+    if (buf == NULL) {
+        ma_decoder_uninit(&dec);
         return 0;
     }
     for (;;) {
@@ -134,6 +139,7 @@ int Jukebox_Measure(const char *path, float *rmsDb, float *peak, double *seconds
         }
         total += got;
     }
+    free(buf);
     ma_decoder_uninit(&dec);
     *rmsDb = gatedN > 0 ? (float)(10.0 * log10(gated / (double)gatedN)) : -90.0f;
     *peak = (float)pk;

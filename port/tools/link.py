@@ -110,9 +110,10 @@ def main():
     (B / "gen/stubs.c").write_text("\n".join(lines) + "\n")
     (B / "stubs.txt").write_text("\n".join(need) + "\n")
     r = link(objs, [str(B / "gen/stubs.c")])
-    errs = [l for l in r.stderr.splitlines() if "multiple definition" in l or "undefined reference" in l or "rror" in l or (MAC and "duplicate symbol" in l)]
+    errs = [l for l in r.stderr.splitlines() if "multiple definition" in l or "undefined reference" in l or "rror" in l or (MAC and ("duplicate symbol" in l or "Undefined symbols" in l or "referenced from" in l or "symbol(s) not found" in l or l.lstrip().startswith("ld:") or l.lstrip().startswith('"_')))]
     print(f"{len(need)} stubs; link {'OK -> ' + str(EXE.relative_to(ROOT)) if r.returncode == 0 else 'FAILED'}; {len(errs)} error lines")
-    for l in errs[:12]:
+    shown = errs[:30] if len(errs) > 1 or r.returncode == 0 else [l for l in r.stderr.splitlines() if l.strip()][-40:]
+    for l in shown:
         print("  " + l[-160:])
     if r.returncode == 0:
         # where the game's own variables lie in this program (for the state checksum; port/src/gs/state.c)

@@ -3170,18 +3170,22 @@ static int interp_build_view(float t, int first) {
                 for (k2 = 0; k2 < 40; k2++) {
                     mag += fabsf(cf[k2]);
                 }
-                for (j2 = 0; j2 < sInterpPrevCount; j2++) {
-                    const float *pf = (const float *)&sInterpPrev[j2];
-                    float dist = 0.0f;
-                    if (sInterpUsed[j2] || sInterpPrevKind[j2] != sInterpKind[i] || sInterpPrevBlkView[j2] != sInterpView) {
-                        continue;
-                    }
-                    for (k2 = 0; k2 < 40 && dist <= mag * 0.05f; k2++) {
-                        dist += fabsf(pf[k2] - cf[k2]);
-                    }
-                    if (dist <= mag * 0.05f && (best < 0 || dist < bestDist)) {
-                        best = (int)j2;
-                        bestDist = dist;
+                float maxDist = mag * 0.05f;
+                if (maxDist > 0.0f) {
+                    for (j2 = 0; j2 < sInterpPrevCount; j2++) {
+                        const float *pf = (const float *)&sInterpPrev[j2];
+                        float dist = 0.0f;
+                        if (sInterpUsed[j2] || sInterpPrevKind[j2] != sInterpKind[i] || sInterpPrevBlkView[j2] != sInterpView) {
+                            continue;
+                        }
+                        for (k2 = 0; k2 < 40 && dist <= maxDist; k2++) {
+                            dist += fabsf(pf[k2] - cf[k2]);
+                        }
+                        if (dist <= maxDist && (best < 0 || dist < bestDist)) {
+                            best = (int)j2;
+                            bestDist = dist;
+                            maxDist = dist;
+                        }
                     }
                 }
             }
@@ -4988,12 +4992,12 @@ static void interp_cost(uint64_t ns) {
     if (getenv("BT3_INTERP_NOCAP") != NULL) {
         return;
     }
-    /* down when the pictures take more than 70% of the tick (the rest is the game's own work), up again when one
-       step more would take less than half of it */
-    while (sInterpCap > 1 && sInterpCostNs * (uint64_t)sInterpCap > 33366700ull * 7 / 10) {
+    /* down when the pictures take more than 90% of the tick (the rest is the game's own work), up again when one
+       step more fits within 85% of the tick */
+    while (sInterpCap > 1 && sInterpCostNs * (uint64_t)sInterpCap > 33366700ull * 9 / 10) {
         sInterpCap /= 2;
     }
-    if (sInterpCap == was && sInterpCap < 8 && sInterpCostNs * (uint64_t)sInterpCap * 2 < 33366700ull / 2) {
+    if (sInterpCap < 8 && sInterpCostNs * (uint64_t)sInterpCap * 2 < 33366700ull * 85 / 100) {
         sInterpCap *= 2;
     }
     if (sInterpCap < was && sInterpCap < interp_steps() && !said) {
@@ -5202,7 +5206,7 @@ static void skip_decide(void) {
     extern int gPortOverlayOpen;
     int behind = Port_PaceBehindUs();
     int skip = GsDraw_FrameSkip() && getenv("BT3_UNCAPPED") == NULL && getenv("BT3_SHOT") == NULL && !gPortOverlayOpen &&
-               behind > (int)(Port_BlankNs() / 1000ull) && sSkipRun < 4;
+               behind > (int)(Port_BlankNs() * 3 / 2 / 1000ull) && sSkipRun < 4;
 
     if (getenv("BT3_SKIP_FORCE") != NULL) { /* testing: every other tick is left out, whatever the clock says */
         skip = sSkipRun == 0;

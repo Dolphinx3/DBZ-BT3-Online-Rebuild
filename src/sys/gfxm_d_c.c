@@ -320,21 +320,39 @@ void ObjDraw_UploadTextures(ObjDrawObj *obj) {
         }
     }
     if (OBJ_FLAG_BITS(&obj->state)->colorStage || OBJ_FLAG_BITS(&obj->state)->colorA) {
+#ifdef PORT
+        if (obj->mdl.model->clutCount > 0) {
+            TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
+        }
+#else
         for (j = 0; j < obj->mdl.model->clutCount; j++) {
             TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
         }
+#endif
     } else if (obj->state.flags & 0x80000) {
         for (j = 0; j < obj->mdl.model->clutCount; j++) {
             BtlObjLight_FindRes1(mdl->model->clutTbp + j * 4);
         }
     } else if (obj->state.flags & 0x40000) {
+#ifdef PORT
+        if (obj->mdl.model->clutCount > 0) {
+            TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
+        }
+#else
         for (j = 0; j < obj->mdl.model->clutCount; j++) {
             TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
         }
+#endif
     } else if (obj->state.flags & 0x400000) {
+#ifdef PORT
+        if (obj->mdl.model->clutCount > 0) {
+            TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
+        }
+#else
         for (j = 0; j < obj->mdl.model->clutCount; j++) {
             TexFile_UploadRange(obj->mdl.tex, mdl->model->clutFirst, mdl->model->clutCount, mdl->model->clutTbp, -1);
         }
+#endif
     }
 }
 

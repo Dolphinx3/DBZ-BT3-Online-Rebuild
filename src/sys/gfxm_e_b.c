@@ -752,7 +752,20 @@ void ObjShadow_Draw(ObjMdlObj *obj, ObjShadowCam *view) {
             ObjGs_AddDefaultEnv();
             BtlObjLight_GetColor(&color);
             color.w *= sh->alpha;
+#ifdef PORT
+            {
+                extern Gfx gGfx;
+                static ObjMdlObj *sLastBuiltObj;
+                static s32 sLastBuiltFrame = -1;
+                if (sLastBuiltObj != obj || sLastBuiltFrame != gGfx.frame) {
+                    ObjShadow_BuildPacket(work->pkt[work->flip], sh->count, sh->tris, (f32 *)&color);
+                    sLastBuiltObj = obj;
+                    sLastBuiltFrame = gGfx.frame;
+                }
+            }
+#else
             ObjShadow_BuildPacket(work->pkt[work->flip], sh->count, sh->tris, (f32 *)&color);
+#endif
             Dma_AddTexFlush();
             ObjGs_AddShadowTexEnv(0x2A00, 4);
             Vu1Pkt_LoadProg6(view, &work->view, &work->scale);

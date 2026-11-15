@@ -228,18 +228,19 @@ uint32_t Gs_VramRead(uint32_t bp, uint32_t bw, uint32_t psm, uint32_t x, uint32_
     return vram_rw(bp, bw, psm, x, y, 0, 0);
 }
 
+static uint32_t sPageHash[512], sPageSeen[512];
+static uint8_t sPageValid[512];
+
 /* A hash of one 8 KB page of GS memory, recomputed only after an upload touched the page. The GPU back end keys
    its texture cache on these, so a texture the game uploads again unchanged (it streams the stage's textures to
    one address many times per frame) is recognised instead of decoded again. */
 uint32_t Gs_PageHash(uint32_t page) {
-    static uint32_t hash[512], seen[512];
-    static uint8_t valid[512];
     uint32_t h = 2166136261u, i;
     const uint32_t *w;
 
     page &= 511;
-    if (valid[page] && seen[page] == gGsPageGen[page]) {
-        return hash[page];
+    if (sPageValid[page] && sPageSeen[page] == gGsPageGen[page]) {
+        return sPageHash[page];
     }
     w = &sVram[page * 2048];
     {   /* four independent 64-bit lanes (the processor runs them side by side), folded at the end */
@@ -273,9 +274,9 @@ uint32_t Gs_PageHash(uint32_t page) {
         q = (l[0] ^ (l[1] << 13 | l[1] >> 51) ^ (l[2] << 29 | l[2] >> 35) ^ (l[3] << 47 | l[3] >> 17)) * 0x9FB21C651E98DF25ull;
         h = (uint32_t)(q ^ q >> 32);
     }
-    hash[page] = h;
-    seen[page] = gGsPageGen[page];
-    valid[page] = 1;
+    sPageHash[page] = h;
+    sPageSeen[page] = gGsPageGen[page];
+    sPageValid[page] = 1;
     return h;
 }
 
@@ -784,9 +785,59 @@ static void transfer_begin(void) {
 
 static uint64_t now_ns(void); /* (below) */
 
+static uint64_t xfer_hash(const uint8_t *p, uint32_t bytes) {
+    uint64_t l0 = 0x9E3779B97F4A7C15ull, l1 = 0xC2B2AE3D27D4EB4Full;
+    uint32_t i = 0;
+    for (; i + 16 <= bytes; i += 16) {
+        uint64_t a, b;
+        memcpy(&a, p + i, 8);
+        memcpy(&b, p + i + 8, 8);
+        l0 = (l0 ^ a) * 0xA0761D6478BD642Full;
+        l1 = (l1 ^ b) * 0xE7037ED1A0B428DBull;
+        l0 ^= l0 >> 32;
+        l1 ^= l1 >> 32;
+    }
+    for (; i + 4 <= bytes; i += 4) {
+        uint32_t a;
+        memcpy(&a, p + i, 4);
+        l0 = (l0 ^ a) * 0x9FB21C651E98DF25ull;
+        l0 ^= l0 >> 32;
+    }
+    for (; i < bytes; i++) {
+        l1 = (l1 ^ p[i]) * 0x9FB21C651E98DF25ull;
+    }
+    return (l0 ^ (l1 << 19 | l1 >> 45)) * 0x9FB21C651E98DF25ull;
+}
+
+enum { XFER_LIVE_SLOTS = 32, XFER_SWIZ_SLOTS = 64, XFER_SWIZ_PAGES = 512, XFER_MAX_PAGES = 32 };
+typedef struct {
+    uint64_t srcHash;
+    uint32_t dbp, dbw, dpsm, tx, ty, tw, th, bytes;
+    uint32_t firstPage, pageCount;
+    uint32_t pageGen[XFER_MAX_PAGES];
+    uint8_t valid;
+} XferLiveSlot;
+typedef struct {
+    uint64_t srcHash;
+    uint32_t dbw, dpsm, tw, th, bytes;
+    uint16_t poolPage, pageCount;
+    uint32_t pageHash[XFER_MAX_PAGES];
+    uint8_t valid;
+} XferSwizSlot;
+
+static XferLiveSlot sXferLive[XFER_LIVE_SLOTS];
+static XferSwizSlot sXferSwiz[XFER_SWIZ_SLOTS];
+static uint32_t *sXferSwizPool;
+static uint32_t sXferSwizNextPage;
+static uint32_t sXferSwizNextSlot;
+
 static void transfer_data(const uint8_t *p, uint32_t bytes) {
     uint32_t dbp = (gs.bitbltbuf >> 32) & 0x3FFF, dbw = (gs.bitbltbuf >> 48) & 0x3F, dpsm = (gs.bitbltbuf >> 56) & 0x3F;
     uint32_t bits, total, i;
+    uint32_t bw = dbw ? dbw : 1;
+    uint32_t rowbytes, first, last, npages = 0;
+    uint64_t srcHash = 0;
+    int canCache = 0, wholePages = 0, haveHash = 0;
 
     if (!gs.transfer || gs.tw == 0) {
         return;
@@ -802,6 +853,84 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
     }
     bits = (uint32_t)Gs_PsmBits(dpsm);
     total = gs.tw * gs.th;
+    rowbytes = bw * 64 * bits / 8;
+    first = dbp / 32 + (gs.ty * rowbytes) / 8192;
+    last = dbp / 32 + ((gs.ty + gs.th) * rowbytes + 8191) / 8192;
+
+    if (sGpu && gs.tpos == 0 && total != 0 && (uint64_t)bytes * 8 >= (uint64_t)total * bits &&
+        !(dbp == 0 && dbw == 8 && bits == 32)) {
+        uint32_t usedBytes = (uint32_t)(((uint64_t)total * bits + 7) / 8);
+        uint32_t span = last - first + 1;
+        if (span <= XFER_MAX_PAGES && usedBytes >= 256) {
+            uint32_t slot = (dbp ^ (dpsm << 5) ^ (gs.tw << 2)) & (XFER_LIVE_SLOTS - 1);
+            XferLiveSlot *ls = &sXferLive[slot];
+            srcHash = xfer_hash(p, usedBytes);
+            haveHash = 1;
+            canCache = 1;
+            if (ls->valid && ls->srcHash == srcHash && ls->bytes == usedBytes &&
+                ls->dbp == dbp && ls->dbw == dbw && ls->dpsm == dpsm &&
+                ls->tx == gs.tx && ls->ty == gs.ty && ls->tw == gs.tw && ls->th == gs.th &&
+                ls->firstPage == first && ls->pageCount == span) {
+                uint32_t k;
+                for (k = 0; k < span; k++) {
+                    if (gGsPageGen[(first + k) & 511] != ls->pageGen[k]) {
+                        break;
+                    }
+                }
+                if (k == span) {
+                    gs.tpos = total;
+                    return;
+                }
+            }
+        }
+        if ((dbp & 31) == 0 && gs.tx == 0 && gs.ty == 0 &&
+            (dpsm == 0x00 || dpsm == 0x02 || dpsm == 0x0A || dpsm == 0x13 || dpsm == 0x14)) {
+            uint32_t pw = (dpsm == 0x13 || dpsm == 0x14) ? 128u : 64u;
+            uint32_t ph = dpsm == 0x00 ? 32u : dpsm == 0x14 ? 128u : 64u;
+            if (gs.tw == bw * 64 && (gs.tw % pw) == 0 && (gs.th % ph) == 0) {
+                npages = (uint32_t)(((uint64_t)total * bits / 8) / 8192);
+                if (npages >= 1 && npages <= XFER_MAX_PAGES) {
+                    if (!haveHash) {
+                        srcHash = xfer_hash(p, usedBytes);
+                        haveHash = 1;
+                    }
+                    wholePages = 1;
+                    for (i = 0; i < XFER_SWIZ_SLOTS; i++) {
+                        const XferSwizSlot *ss = &sXferSwiz[i];
+                        if (ss->valid && ss->srcHash == srcHash && ss->bytes == usedBytes &&
+                            ss->dbw == dbw && ss->dpsm == dpsm && ss->tw == gs.tw && ss->th == gs.th &&
+                            ss->pageCount == npages) {
+                            uint32_t k;
+                            for (k = 0; k < npages; k++) {
+                                uint32_t pg = (first + k) & 511;
+                                memcpy(&sVram[pg * 2048], &sXferSwizPool[(ss->poolPage + k) * 2048], 8192);
+                                gGsPageGen[pg]++;
+                                sPageHash[pg] = ss->pageHash[k];
+                                sPageSeen[pg] = gGsPageGen[pg];
+                                sPageValid[pg] = 1;
+                            }
+                            gs.tpos = total;
+                            if (canCache) {
+                                uint32_t slot = (dbp ^ (dpsm << 5) ^ (gs.tw << 2)) & (XFER_LIVE_SLOTS - 1);
+                                XferLiveSlot *ls = &sXferLive[slot];
+                                uint32_t span = last - first + 1;
+                                ls->srcHash = srcHash;
+                                ls->dbp = dbp; ls->dbw = dbw; ls->dpsm = dpsm;
+                                ls->tx = gs.tx; ls->ty = gs.ty; ls->tw = gs.tw; ls->th = gs.th;
+                                ls->bytes = usedBytes;
+                                ls->firstPage = first; ls->pageCount = span;
+                                for (k = 0; k < span; k++) {
+                                    ls->pageGen[k] = gGsPageGen[(first + k) & 511];
+                                }
+                                ls->valid = 1;
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
     /* The formats textures and palettes come in, a row at a time with the tables (the game uploads the stage's
        textures again and again in every frame: this loop was a quarter of the renderer's time). The same writes
        as vram_rw makes. */
@@ -860,12 +989,60 @@ static void transfer_data(const uint8_t *p, uint32_t bytes) {
         vram_rw(dbp, dbw, dpsm, x, y, 1, c);
     }
     /* which pages changed: every page the rectangle can touch (pages are 8 KB = 32 blocks) */
-    {
-        uint32_t rowbytes = (dbw ? dbw : 1) * 64 * bits / 8, first = dbp / 32 + (gs.ty * rowbytes) / 8192;
-        uint32_t last = dbp / 32 + ((gs.ty + gs.th) * rowbytes + 8191) / 8192;
+    if (wholePages) {
+        uint32_t k, poolStart;
+        if (sXferSwizPool == NULL) {
+            sXferSwizPool = (uint32_t *)malloc((size_t)XFER_SWIZ_PAGES * 8192);
+        }
+        for (k = 0; k < npages; k++) {
+            gGsPageGen[(first + k) & 511]++;
+        }
+        if (sXferSwizPool != NULL) {
+            XferSwizSlot *ss;
+            if (sXferSwizNextPage + npages > XFER_SWIZ_PAGES) {
+                sXferSwizNextPage = 0;
+            }
+            poolStart = sXferSwizNextPage;
+            sXferSwizNextPage += npages;
+            for (k = 0; k < XFER_SWIZ_SLOTS; k++) {
+                XferSwizSlot *old = &sXferSwiz[k];
+                if (old->valid && old->poolPage < poolStart + npages && old->poolPage + old->pageCount > poolStart) {
+                    old->valid = 0;
+                }
+            }
+            ss = &sXferSwiz[sXferSwizNextSlot];
+            sXferSwizNextSlot = (sXferSwizNextSlot + 1) & (XFER_SWIZ_SLOTS - 1);
+            ss->srcHash = srcHash;
+            ss->dbw = dbw; ss->dpsm = dpsm; ss->tw = gs.tw; ss->th = gs.th;
+            ss->bytes = (uint32_t)((uint64_t)total * bits / 8);
+            ss->poolPage = (uint16_t)poolStart;
+            ss->pageCount = (uint16_t)npages;
+            for (k = 0; k < npages; k++) {
+                uint32_t pg = (first + k) & 511;
+                memcpy(&sXferSwizPool[(poolStart + k) * 2048], &sVram[pg * 2048], 8192);
+                ss->pageHash[k] = Gs_PageHash(pg);
+            }
+            ss->valid = 1;
+        }
+    } else {
         for (i = first; i <= last; i++) {
             gGsPageGen[i & 511]++;
         }
+    }
+    if (canCache) {
+        uint32_t usedBytes = (uint32_t)(((uint64_t)total * bits + 7) / 8);
+        uint32_t span = last - first + 1, k;
+        uint32_t slot = (dbp ^ (dpsm << 5) ^ (gs.tw << 2)) & (XFER_LIVE_SLOTS - 1);
+        XferLiveSlot *ls = &sXferLive[slot];
+        ls->srcHash = srcHash;
+        ls->dbp = dbp; ls->dbw = dbw; ls->dpsm = dpsm;
+        ls->tx = gs.tx; ls->ty = gs.ty; ls->tw = gs.tw; ls->th = gs.th;
+        ls->bytes = usedBytes;
+        ls->firstPage = first; ls->pageCount = span;
+        for (k = 0; k < span; k++) {
+            ls->pageGen[k] = gGsPageGen[(first + k) & 511];
+        }
+        ls->valid = 1;
     }
 }
 

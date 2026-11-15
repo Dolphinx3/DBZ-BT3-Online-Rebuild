@@ -3067,6 +3067,7 @@ static int interp_build_view(float t, int first) {
     memset(sInterpBucket, 0xFF, sizeof(sInterpBucket));
     memset(sInterpUsed, 0, sInterpPrevCount);
     for (i = sInterpPrevCount; i-- > 0;) { /* (backwards: each chain lists its blocks in the order of the list) */
+        if (sInterpPrevBlkView[i] != sInterpView) { continue; }
         uint32_t b = sInterpPrevSig[i] * 2654435761u >> 20;
         sInterpChain[i] = sInterpBucket[b];
         sInterpBucket[b] = (uint16_t)i;
@@ -3120,18 +3121,29 @@ static int interp_build_view(float t, int first) {
        camera's change, which does not fit what follows the camera: it slid aside and the cleared picture showed
        through as a grey veil.) */
     {
-        memset(sInterpBucket2, 0xFF, sizeof(sInterpBucket2));
-        for (i = sInterpPrevCount; i-- > 0;) {
-            const uint32_t *w = (const uint32_t *)sInterpPrev[i].boneA;
-            uint32_t h = sInterpPrevKind[i], k2;
-            for (k2 = 0; k2 < 40; k2++) {
-                h = (h ^ w[k2]) * 16777619u;
-            }
-            h = h * 2654435761u >> 20;
-            sInterpChain2[i] = sInterpBucket2[h];
-            sInterpBucket2[h] = (uint16_t)i;
-        }
+        int need1b = 0;
         for (i = 0; i < gsVuUniCount; i++) {
+            if (sInterpBlkView[i] == sInterpView && sInterpPair[i] < 0 && sInterpSig[i] != 0 &&
+                sInterpSig[i] != 0x53484457u && (sInterpKind[i] >> 6) != 2) {
+                need1b = 1;
+                break;
+            }
+        }
+        if (need1b) {
+            memset(sInterpBucket2, 0xFF, sizeof(sInterpBucket2));
+            for (i = sInterpPrevCount; i-- > 0;) {
+                if (sInterpPrevBlkView[i] != sInterpView) { continue; }
+                const uint32_t *w = (const uint32_t *)sInterpPrev[i].boneA;
+                uint32_t h = sInterpPrevKind[i], k2;
+                for (k2 = 0; k2 < 40; k2++) {
+                    h = (h ^ w[k2]) * 16777619u;
+                }
+                h = h * 2654435761u >> 20;
+                sInterpChain2[i] = sInterpBucket2[h];
+                sInterpBucket2[h] = (uint16_t)i;
+            }
+        }
+        for (i = 0; need1b && i < gsVuUniCount; i++) {
         if (sInterpBlkView[i] != sInterpView) { continue; } /* (one view at a time) */
             const Vu0Uniform *c = &gsVuUni[i];
             const uint32_t *w = (const uint32_t *)c->boneA;
@@ -3275,7 +3287,6 @@ static int interp_build_view(float t, int first) {
        camera looked at it from outside: a dark sheet over the whole picture, seen whenever it was "placed by the
        camera"). It is known by this: the previous picture has a block of the same kind whose first vertex is this
        one's, less the way the camera went. */
-    memset(sInterpFollow, 0, gsVuUniCount);
     if (agreed && sInterpHaveCam) {
         float d[3], dl;
         d[0] = (float)(sInterpCamNow[0] - sInterpCamWas[0]);
@@ -3875,6 +3886,7 @@ static int interp_build(float t, int first) {
             }
             sInterpViews[k].scenery |= (sInterpKind[i] >> 6) == 2;
         }
+        memset(sInterpFollow, 0, gsVuUniCount);
     }
     for (k = 0; k < sInterpViewCount; k++) {
         InterpViewState *v = &sInterpViews[k];
@@ -4124,20 +4136,39 @@ static int interp_bykind_cmp(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
-static int interp_kind_find(uint32_t kind, int add) {
-    uint32_t k;
+static uint16_t sInterpKindBucket[1024], sInterpKindNext[INTERP_MAX_KINDS];
 
-    for (k = 0; k < sInterpKindCount; k++) {
+static int interp_kind_find(uint32_t kind, int add) {
+    static uint32_t lastKind;
+    static int lastIdx = -1;
+    uint32_t b;
+    uint16_t k;
+
+    if (sInterpKindCount == 0) {
+        memset(sInterpKindBucket, 0xFF, sizeof(sInterpKindBucket));
+        lastIdx = -1;
+    } else if (lastIdx >= 0 && (uint32_t)lastIdx < sInterpKindCount && lastKind == kind) {
+        return lastIdx;
+    }
+    b = (kind * 2654435761u) >> 22;
+    for (k = sInterpKindBucket[b]; k != 0xFFFF; k = sInterpKindNext[k]) {
         if (sInterpKinds[k].kind == kind) {
+            lastKind = kind;
+            lastIdx = (int)k;
             return (int)k;
         }
     }
     if (!add || sInterpKindCount == INTERP_MAX_KINDS) {
         return -1;
     }
-    memset(&sInterpKinds[sInterpKindCount], 0, sizeof(sInterpKinds[0]));
-    sInterpKinds[sInterpKindCount].kind = kind;
-    return (int)sInterpKindCount++;
+    k = (uint16_t)sInterpKindCount++;
+    memset(&sInterpKinds[k], 0, sizeof(sInterpKinds[0]));
+    sInterpKinds[k].kind = kind;
+    sInterpKindNext[k] = sInterpKindBucket[b];
+    sInterpKindBucket[b] = k;
+    lastKind = kind;
+    lastIdx = (int)k;
+    return (int)k;
 }
 
 /* A surface whose texture is another one this tick (a waterfall's water is a few pictures shown in turn; a texture
